@@ -41,7 +41,7 @@ mcp-sqlite_<version>_windows_<arch>.zip
 Linux/macOS quick install (replace `<version>`, `<os>`, `<arch>`):
 
 ```bash
-VERSION=v0.1.0
+VERSION=v0.0.1
 OS=linux   # linux or darwin
 ARCH=amd64 # amd64 or arm64
 curl -fL -o /tmp/mcp-sqlite.tar.gz \
@@ -53,7 +53,7 @@ install /tmp/mcp-sqlite /usr/local/bin/mcp-sqlite
 Windows PowerShell quick install (replace `<version>`, `<arch>`):
 
 ```powershell
-$Version = "v0.1.0"
+$Version = "v0.0.1"
 $Arch = "amd64" # amd64 or arm64
 $Url = "https://github.com/rusq/mcp-sqlite/releases/download/$Version/mcp-sqlite_$($Version.TrimStart('v'))_windows_$Arch.zip"
 $Zip = "$env:TEMP\mcp-sqlite.zip"
