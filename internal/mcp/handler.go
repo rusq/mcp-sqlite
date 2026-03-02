@@ -68,7 +68,10 @@ func (h *Handler) Register(s *server.MCPServer) {
 			mcpgo.WithDescription("Execute a read-only SQL query (SELECT, WITH, EXPLAIN)."),
 			mcpgo.WithString("sql",
 				mcpgo.Required(),
-				mcpgo.Description("A read-only SQL statement"),
+				mcpgo.Description("A read-only SQL statement, may contain ? placeholders"),
+			),
+			mcpgo.WithArray("params",
+				mcpgo.Description("Optional bind parameters for ? placeholders, e.g. [\"John\", 42]"),
 			),
 		),
 		h.handleQuery,
@@ -79,7 +82,10 @@ func (h *Handler) Register(s *server.MCPServer) {
 			mcpgo.WithDescription("Execute a write SQL operation (INSERT, UPDATE, DELETE, DDL, etc.)."),
 			mcpgo.WithString("sql",
 				mcpgo.Required(),
-				mcpgo.Description("A SQL statement that modifies the database"),
+				mcpgo.Description("A SQL statement that modifies the database, may contain ? placeholders"),
+			),
+			mcpgo.WithArray("params",
+				mcpgo.Description("Optional bind parameters for ? placeholders, e.g. [\"John\", 42]"),
 			),
 		),
 		h.handleExecute,
@@ -159,6 +165,21 @@ func (h *Handler) handleGetSchema(_ context.Context, req mcpgo.CallToolRequest) 
 	return mcpgo.NewToolResultText(formatSchema(tables)), nil
 }
 
+// getParams extracts the optional "params" array from a tool request,
+// preserving the native JSON types (string, float64, bool, nil) of each item.
+// Returns nil if the key is absent or not an array.
+func getParams(req mcpgo.CallToolRequest) []any {
+	v, ok := req.GetArguments()["params"]
+	if !ok || v == nil {
+		return nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	return arr
+}
+
 // handleQuery implements the query tool.
 func (h *Handler) handleQuery(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	sqlStr := strings.TrimSpace(req.GetString("sql", ""))
@@ -166,11 +187,12 @@ func (h *Handler) handleQuery(_ context.Context, req mcpgo.CallToolRequest) (*mc
 		h.logger.Warn("query: missing required parameter 'sql'")
 		return errResult("parameter 'sql' is required and must be a non-empty string")
 	}
+	params := getParams(req)
 
 	h.gate.RLock()
 	defer h.gate.RUnlock()
 
-	result, err := h.repo.Query(sqlStr)
+	result, err := h.repo.Query(sqlStr, params)
 	if err != nil {
 		if errors.Is(err, database.ErrNoDatabase) {
 			h.logger.Warn("query: no database open")
@@ -190,11 +212,12 @@ func (h *Handler) handleExecute(_ context.Context, req mcpgo.CallToolRequest) (*
 		h.logger.Warn("execute: missing required parameter 'sql'")
 		return errResult("parameter 'sql' is required and must be a non-empty string")
 	}
+	params := getParams(req)
 
 	h.gate.RLock()
 	defer h.gate.RUnlock()
 
-	result, err := h.repo.Execute(sqlStr)
+	result, err := h.repo.Execute(sqlStr, params)
 	if err != nil {
 		if errors.Is(err, database.ErrNoDatabase) {
 			h.logger.Warn("execute: no database open")

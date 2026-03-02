@@ -190,6 +190,50 @@ func TestHandler_Query_NonSelect(t *testing.T) {
 	}
 }
 
+func TestHandler_Query_BindParams(t *testing.T) {
+	cli, _, _ := testHarness(t)
+	res := callTool(t, cli, "query", map[string]any{
+		"sql":    "SELECT id, name FROM users WHERE name = ?",
+		"params": []any{"Alice"},
+	})
+	if res.IsError {
+		t.Fatalf("query with bind params error: %s", resultText(res))
+	}
+	text := resultText(res)
+	if !strings.Contains(text, "Alice") {
+		t.Errorf("expected 'Alice' in result, got: %s", text)
+	}
+	if strings.Contains(text, "Bob") || strings.Contains(text, "Carol") {
+		t.Errorf("unexpected rows in filtered result: %s", text)
+	}
+}
+
+func TestHandler_Execute_BindParams(t *testing.T) {
+	cli, _, _ := testHarness(t)
+	res := callTool(t, cli, "execute", map[string]any{
+		"sql":    "INSERT INTO users(name, age) VALUES(?, ?)",
+		"params": []any{"Dave", 40},
+	})
+	if res.IsError {
+		t.Fatalf("execute with bind params error: %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "Rows affected: 1") {
+		t.Errorf("unexpected response: %s", resultText(res))
+	}
+
+	// Verify the row can be retrieved via a parameterised query.
+	check := callTool(t, cli, "query", map[string]any{
+		"sql":    "SELECT name FROM users WHERE name = ?",
+		"params": []any{"Dave"},
+	})
+	if check.IsError {
+		t.Fatalf("verify query error: %s", resultText(check))
+	}
+	if !strings.Contains(resultText(check), "Dave") {
+		t.Errorf("inserted row not found via bind-param query: %s", resultText(check))
+	}
+}
+
 // ── execute ────────────────────────────────────────────────────────────────
 
 func TestHandler_Execute_Insert(t *testing.T) {

@@ -12,7 +12,7 @@ var ErrNoDatabase = errors.New("no database is open")
 type Repository interface {
 	Open(path string) error
 	GetSchema(mask string) ([]Table, error)
-	Query(sql string) (QueryResult, error)
-	Execute(sql string) (ExecuteResult, error)
+	Query(sql string, params []any) (QueryResult, error)
+	Execute(sql string, params []any) (ExecuteResult, error)
 	Close() error
 }
