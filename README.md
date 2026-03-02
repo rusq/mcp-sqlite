@@ -20,6 +20,48 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 go install github.com/rusq/mcp-sqlite/cmd/mcp-sqlite@latest
 ```
 
+Install from GitHub Releases (prebuilt binaries):
+
+1. Download the archive for your platform from:
+   `https://github.com/rusq/mcp-sqlite/releases/latest`
+2. Extract and place `mcp-sqlite` (or `mcp-sqlite.exe`) in your `PATH`.
+
+Archive naming pattern:
+
+```
+mcp-sqlite_<version>_<os>_<arch>.tar.gz
+```
+
+On Windows, use:
+
+```
+mcp-sqlite_<version>_windows_<arch>.zip
+```
+
+Linux/macOS quick install (replace `<version>`, `<os>`, `<arch>`):
+
+```bash
+VERSION=v0.1.0
+OS=linux   # linux or darwin
+ARCH=amd64 # amd64 or arm64
+curl -fL -o /tmp/mcp-sqlite.tar.gz \
+  "https://github.com/rusq/mcp-sqlite/releases/download/${VERSION}/mcp-sqlite_${VERSION#v}_${OS}_${ARCH}.tar.gz"
+tar -xzf /tmp/mcp-sqlite.tar.gz -C /tmp
+install /tmp/mcp-sqlite /usr/local/bin/mcp-sqlite
+```
+
+Windows PowerShell quick install (replace `<version>`, `<arch>`):
+
+```powershell
+$Version = "v0.1.0"
+$Arch = "amd64" # amd64 or arm64
+$Url = "https://github.com/rusq/mcp-sqlite/releases/download/$Version/mcp-sqlite_$($Version.TrimStart('v'))_windows_$Arch.zip"
+$Zip = "$env:TEMP\mcp-sqlite.zip"
+Invoke-WebRequest -Uri $Url -OutFile $Zip
+Expand-Archive -Path $Zip -DestinationPath "$env:TEMP\mcp-sqlite" -Force
+Copy-Item "$env:TEMP\mcp-sqlite\mcp-sqlite.exe" "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\mcp-sqlite.exe" -Force
+```
+
 Or build from source:
 
 ```
