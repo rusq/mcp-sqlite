@@ -2,3 +2,4 @@
 ./mcp-sqlite
 dist/
 .*~
+bootstrap/

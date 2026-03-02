@@ -3,6 +3,8 @@
 package database
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -49,196 +51,291 @@ func newTestDB(t *testing.T) (*DB, string) {
 	return db, path
 }
 
+// bg is shorthand for context.Background() used throughout tests.
+var bg = context.Background()
+
 // ── GetSchema ────────────────────────────────────────────────────────────────
 
-func TestGetSchema_TablesAndColumns(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
+func TestGetSchema(t *testing.T) {
+	t.Run("TablesAndColumns", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
 
-	tables, err := db.GetSchema("")
-	if err != nil {
-		t.Fatalf("GetSchema: %v", err)
-	}
-
-	byName := map[string]Table{}
-	for _, tbl := range tables {
-		byName[tbl.Name] = tbl
-	}
-
-	// users table
-	users, ok := byName["users"]
-	if !ok {
-		t.Fatal("expected table 'users'")
-	}
-	if users.Type != "table" {
-		t.Errorf("users.Type = %q, want %q", users.Type, "table")
-	}
-	if len(users.Columns) != 3 {
-		t.Errorf("users: want 3 columns, got %d", len(users.Columns))
-	}
-
-	// orders table — has FK and index
-	orders, ok := byName["orders"]
-	if !ok {
-		t.Fatal("expected table 'orders'")
-	}
-	if len(orders.Indexes) != 1 || orders.Indexes[0] != "idx_orders_user" {
-		t.Errorf("orders.Indexes = %v, want [idx_orders_user]", orders.Indexes)
-	}
-	if len(orders.ForeignKeys) != 1 {
-		t.Errorf("orders: want 1 FK, got %d", len(orders.ForeignKeys))
-	} else {
-		fk := orders.ForeignKeys[0]
-		if fk.Table != "users" || fk.From != "user_id" || fk.To != "id" {
-			t.Errorf("orders FK = %+v, unexpected values", fk)
+		tables, err := db.GetSchema("")
+		if err != nil {
+			t.Fatalf("GetSchema: %v", err)
 		}
-	}
 
-	// view
-	view, ok := byName["active_users"]
-	if !ok {
-		t.Fatal("expected view 'active_users'")
-	}
-	if view.Type != "view" {
-		t.Errorf("active_users.Type = %q, want %q", view.Type, "view")
-	}
-	if len(view.Indexes) != 0 || len(view.ForeignKeys) != 0 {
-		t.Error("view should have no indexes or foreign keys")
-	}
-}
-
-func TestGetSchema_Mask(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
-
-	tables, err := db.GetSchema("user%")
-	if err != nil {
-		t.Fatalf("GetSchema with mask: %v", err)
-	}
-	for _, tbl := range tables {
-		if tbl.Name != "users" {
-			t.Errorf("mask filter returned unexpected table %q", tbl.Name)
+		byName := map[string]Table{}
+		for _, tbl := range tables {
+			byName[tbl.Name] = tbl
 		}
-	}
-}
 
-func TestGetSchema_NoDatabase(t *testing.T) {
-	db := New()
-	_, err := db.GetSchema("")
-	if err == nil {
-		t.Fatal("expected error when no database is open")
-	}
+		// users table
+		users, ok := byName["users"]
+		if !ok {
+			t.Fatal("expected table 'users'")
+		}
+		if users.Type != "table" {
+			t.Errorf("users.Type = %q, want %q", users.Type, "table")
+		}
+		if len(users.Columns) != 3 {
+			t.Errorf("users: want 3 columns, got %d", len(users.Columns))
+		}
+
+		// orders table — has FK and index
+		orders, ok := byName["orders"]
+		if !ok {
+			t.Fatal("expected table 'orders'")
+		}
+		if len(orders.Indexes) != 1 || orders.Indexes[0] != "idx_orders_user" {
+			t.Errorf("orders.Indexes = %v, want [idx_orders_user]", orders.Indexes)
+		}
+		if len(orders.ForeignKeys) != 1 {
+			t.Errorf("orders: want 1 FK, got %d", len(orders.ForeignKeys))
+		} else {
+			fk := orders.ForeignKeys[0]
+			if fk.Table != "users" || fk.From != "user_id" || fk.To != "id" {
+				t.Errorf("orders FK = %+v, unexpected values", fk)
+			}
+		}
+
+		// view
+		view, ok := byName["active_users"]
+		if !ok {
+			t.Fatal("expected view 'active_users'")
+		}
+		if view.Type != "view" {
+			t.Errorf("active_users.Type = %q, want %q", view.Type, "view")
+		}
+		if len(view.Indexes) != 0 || len(view.ForeignKeys) != 0 {
+			t.Error("view should have no indexes or foreign keys")
+		}
+	})
+
+	t.Run("Mask", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		tables, err := db.GetSchema("user%")
+		if err != nil {
+			t.Fatalf("GetSchema with mask: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				t.Errorf("mask filter returned unexpected table %q", tbl.Name)
+			}
+		}
+	})
+
+	t.Run("NoDatabase", func(t *testing.T) {
+		db := New()
+		_, err := db.GetSchema("")
+		if err == nil {
+			t.Fatal("expected error when no database is open")
+		}
+	})
 }
 
 // ── Query ─────────────────────────────────────────────────────────────────────
 
-func TestQuery_Select(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
+func TestQuery(t *testing.T) {
+	t.Run("Select", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
 
-	res, err := db.Query("SELECT id, name FROM users ORDER BY id")
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	if res.Count != 3 {
-		t.Errorf("want 3 rows, got %d", res.Count)
-	}
-	if res.Rows[0]["name"] != "Alice" {
-		t.Errorf("first row name = %v, want Alice", res.Rows[0]["name"])
-	}
-}
+		res, err := db.Query(bg, "SELECT id, name FROM users ORDER BY id", nil)
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if res.Count != 3 {
+			t.Errorf("want 3 rows, got %d", res.Count)
+		}
+		if res.Rows[0]["name"] != "Alice" {
+			t.Errorf("first row name = %v, want Alice", res.Rows[0]["name"])
+		}
+	})
 
-func TestQuery_WithCTE(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
+	t.Run("WithCTE", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
 
-	_, err := db.Query("WITH cte AS (SELECT 1 AS n) SELECT n FROM cte")
-	if err != nil {
-		t.Fatalf("WITH query: %v", err)
-	}
-}
+		_, err := db.Query(bg, "WITH cte AS (SELECT 1 AS n) SELECT n FROM cte", nil)
+		if err != nil {
+			t.Fatalf("WITH query: %v", err)
+		}
+	})
 
-func TestQuery_Explain(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
+	t.Run("Explain", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
 
-	_, err := db.Query("EXPLAIN SELECT * FROM users")
-	if err != nil {
-		t.Fatalf("EXPLAIN query: %v", err)
-	}
-}
+		_, err := db.Query(bg, "EXPLAIN SELECT * FROM users", nil)
+		if err != nil {
+			t.Fatalf("EXPLAIN query: %v", err)
+		}
+	})
 
-func TestQuery_RejectsNonSelect(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
+	t.Run("RejectsNonSelect", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
 
-	_, err := db.Query("INSERT INTO users(name,age) VALUES('X',1)")
-	if err == nil {
-		t.Fatal("expected error for non-SELECT statement")
-	}
+		_, err := db.Query(bg, "INSERT INTO users(name,age) VALUES('X',1)", nil)
+		if err == nil {
+			t.Fatal("expected error for non-SELECT statement")
+		}
+	})
+
+	t.Run("RejectsEmpty", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		for _, sql := range []string{"", "   ", "\t\n"} {
+			_, err := db.Query(bg, sql, nil)
+			if err == nil {
+				t.Errorf("Query(%q): expected error for empty SQL, got nil", sql)
+			}
+		}
+	})
+
+	t.Run("BindParams", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		res, err := db.Query(bg, "SELECT id, name FROM users WHERE name = ?", []any{"Alice"})
+		if err != nil {
+			t.Fatalf("Query with bind param: %v", err)
+		}
+		if res.Count != 1 {
+			t.Fatalf("want 1 row, got %d", res.Count)
+		}
+		if res.Rows[0]["name"] != "Alice" {
+			t.Errorf("row name = %v, want Alice", res.Rows[0]["name"])
+		}
+	})
+
+	t.Run("BindParamsMultiple", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		res, err := db.Query(bg, "SELECT id, name FROM users WHERE name = ? AND age = ?", []any{"Alice", int64(30)})
+		if err != nil {
+			t.Fatalf("Query with multiple bind params: %v", err)
+		}
+		if res.Count != 1 {
+			t.Errorf("want 1 row, got %d", res.Count)
+		}
+	})
+
+	t.Run("CancelledContext", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel immediately
+
+		_, err := db.Query(ctx, "SELECT id, name FROM users", nil)
+		if err == nil {
+			t.Fatal("expected error for cancelled context, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got: %v", err)
+		}
+	})
 }
 
 // ── Execute ───────────────────────────────────────────────────────────────────
 
-func TestExecute_Insert(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
+func TestExecute(t *testing.T) {
+	t.Run("Insert", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
 
-	res, err := db.Execute("INSERT INTO users(name, age) VALUES('Dave', 40)")
-	if err != nil {
-		t.Fatalf("Execute INSERT: %v", err)
-	}
-	if res.RowsAffected != 1 {
-		t.Errorf("RowsAffected = %d, want 1", res.RowsAffected)
-	}
-	if res.LastInsertID != 4 {
-		t.Errorf("LastInsertID = %d, want 4", res.LastInsertID)
-	}
-}
-
-func TestExecute_Update(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
-
-	res, err := db.Execute("UPDATE users SET age = 31 WHERE name = 'Alice'")
-	if err != nil {
-		t.Fatalf("Execute UPDATE: %v", err)
-	}
-	if res.RowsAffected != 1 {
-		t.Errorf("RowsAffected = %d, want 1", res.RowsAffected)
-	}
-}
-
-func TestExecute_RejectsSelect(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
-
-	_, err := db.Execute("SELECT * FROM users")
-	if err == nil {
-		t.Fatal("expected error for SELECT in Execute")
-	}
-}
-
-func TestQuery_RejectsEmpty(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
-
-	for _, sql := range []string{"", "   ", "\t\n"} {
-		_, err := db.Query(sql)
-		if err == nil {
-			t.Errorf("Query(%q): expected error for empty SQL, got nil", sql)
+		res, err := db.Execute(bg, "INSERT INTO users(name, age) VALUES('Dave', 40)", nil)
+		if err != nil {
+			t.Fatalf("Execute INSERT: %v", err)
 		}
-	}
-}
-
-func TestExecute_RejectsEmpty(t *testing.T) {
-	db, _ := newTestDB(t)
-	defer db.Close()
-
-	for _, sql := range []string{"", "   ", "\t\n"} {
-		_, err := db.Execute(sql)
-		if err == nil {
-			t.Errorf("Execute(%q): expected error for empty SQL, got nil", sql)
+		if res.RowsAffected != 1 {
+			t.Errorf("RowsAffected = %d, want 1", res.RowsAffected)
 		}
-	}
+		if res.LastInsertID != 4 {
+			t.Errorf("LastInsertID = %d, want 4", res.LastInsertID)
+		}
+	})
+
+	t.Run("Update", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		res, err := db.Execute(bg, "UPDATE users SET age = 31 WHERE name = 'Alice'", nil)
+		if err != nil {
+			t.Fatalf("Execute UPDATE: %v", err)
+		}
+		if res.RowsAffected != 1 {
+			t.Errorf("RowsAffected = %d, want 1", res.RowsAffected)
+		}
+	})
+
+	t.Run("RejectsSelect", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		_, err := db.Execute(bg, "SELECT * FROM users", nil)
+		if err == nil {
+			t.Fatal("expected error for SELECT in Execute")
+		}
+	})
+
+	t.Run("RejectsEmpty", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		for _, sql := range []string{"", "   ", "\t\n"} {
+			_, err := db.Execute(bg, sql, nil)
+			if err == nil {
+				t.Errorf("Execute(%q): expected error for empty SQL, got nil", sql)
+			}
+		}
+	})
+
+	t.Run("BindParams", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		res, err := db.Execute(bg, "INSERT INTO users(name, age) VALUES(?, ?)", []any{"Eve", int64(22)})
+		if err != nil {
+			t.Fatalf("Execute with bind params: %v", err)
+		}
+		if res.RowsAffected != 1 {
+			t.Errorf("RowsAffected = %d, want 1", res.RowsAffected)
+		}
+
+		// Verify the row was inserted with the correct values.
+		check, err := db.Query(bg, "SELECT name, age FROM users WHERE name = ?", []any{"Eve"})
+		if err != nil {
+			t.Fatalf("verify query: %v", err)
+		}
+		if check.Count != 1 {
+			t.Fatalf("inserted row not found")
+		}
+		if check.Rows[0]["name"] != "Eve" {
+			t.Errorf("name = %v, want Eve", check.Rows[0]["name"])
+		}
+	})
+
+	t.Run("CancelledContext", func(t *testing.T) {
+		db, _ := newTestDB(t)
+		defer db.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel immediately
+
+		_, err := db.Execute(ctx, "INSERT INTO users(name, age) VALUES('Ghost', 0)", nil)
+		if err == nil {
+			t.Fatal("expected error for cancelled context, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got: %v", err)
+		}
+	})
 }

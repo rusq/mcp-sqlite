@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -22,9 +23,10 @@ const sqlLogMaxLen = 100
 
 // Handler holds the MCP tool handlers and the concurrency gate.
 type Handler struct {
-	repo    database.Repository
-	logger  *slog.Logger
-	maxRows int
+	repo         database.Repository
+	logger       *slog.Logger
+	maxRows      int
+	queryTimeout time.Duration
 
 	// gate is a second RWMutex at the handler layer.
 	// open_database holds the write lock; data ops hold the read lock.
@@ -35,9 +37,10 @@ type Handler struct {
 	openInProgress atomic.Int32
 }
 
-// New returns a Handler ready to register tools.
-func New(repo database.Repository, logger *slog.Logger, maxRows int) *Handler {
-	return &Handler{repo: repo, logger: logger, maxRows: maxRows}
+// New returns a Handler ready to register tools. queryTimeout is applied as a
+// deadline to every query and execute call.
+func New(repo database.Repository, logger *slog.Logger, maxRows int, queryTimeout time.Duration) *Handler {
+	return &Handler{repo: repo, logger: logger, maxRows: maxRows, queryTimeout: queryTimeout}
 }
 
 // Register registers all four tools with the given MCP server.
@@ -68,7 +71,10 @@ func (h *Handler) Register(s *server.MCPServer) {
 			mcpgo.WithDescription("Execute a read-only SQL query (SELECT, WITH, EXPLAIN)."),
 			mcpgo.WithString("sql",
 				mcpgo.Required(),
-				mcpgo.Description("A read-only SQL statement"),
+				mcpgo.Description("A read-only SQL statement, may contain ? placeholders"),
+			),
+			mcpgo.WithArray("params",
+				mcpgo.Description("Optional bind parameters for ? placeholders, e.g. [\"John\", 42]"),
 			),
 		),
 		h.handleQuery,
@@ -79,7 +85,10 @@ func (h *Handler) Register(s *server.MCPServer) {
 			mcpgo.WithDescription("Execute a write SQL operation (INSERT, UPDATE, DELETE, DDL, etc.)."),
 			mcpgo.WithString("sql",
 				mcpgo.Required(),
-				mcpgo.Description("A SQL statement that modifies the database"),
+				mcpgo.Description("A SQL statement that modifies the database, may contain ? placeholders"),
+			),
+			mcpgo.WithArray("params",
+				mcpgo.Description("Optional bind parameters for ? placeholders, e.g. [\"John\", 42]"),
 			),
 		),
 		h.handleExecute,
@@ -159,22 +168,50 @@ func (h *Handler) handleGetSchema(_ context.Context, req mcpgo.CallToolRequest) 
 	return mcpgo.NewToolResultText(formatSchema(tables)), nil
 }
 
+// getParams extracts the optional "params" array from a tool request,
+// preserving the native JSON types (string, float64, bool, nil) of each item.
+// Returns (nil, nil) if the key is absent or null.
+// Returns a non-nil error if "params" is present but not a JSON array.
+func getParams(req mcpgo.CallToolRequest) ([]any, error) {
+	v, ok := req.GetArguments()["params"]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("parameter 'params' must be an array, got %T", v)
+	}
+	return arr, nil
+}
+
 // handleQuery implements the query tool.
-func (h *Handler) handleQuery(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleQuery(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	sqlStr := strings.TrimSpace(req.GetString("sql", ""))
 	if sqlStr == "" {
 		h.logger.Warn("query: missing required parameter 'sql'")
 		return errResult("parameter 'sql' is required and must be a non-empty string")
 	}
+	params, err := getParams(req)
+	if err != nil {
+		h.logger.Warn("query: invalid params", "err", err)
+		return errResult(err.Error())
+	}
 
 	h.gate.RLock()
 	defer h.gate.RUnlock()
 
-	result, err := h.repo.Query(sqlStr)
+	ctx, cancel := context.WithTimeout(ctx, h.queryTimeout)
+	defer cancel()
+
+	result, err := h.repo.Query(ctx, sqlStr, params)
 	if err != nil {
 		if errors.Is(err, database.ErrNoDatabase) {
 			h.logger.Warn("query: no database open")
 			return errResult("No database is open. Call open_database first.")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			h.logger.Warn("query: timed out", "sql", truncateSQL(sqlStr), "timeout", h.queryTimeout)
+			return errResult(fmt.Sprintf("query timed out after %v", h.queryTimeout))
 		}
 		h.logger.Error("query failed", "sql", truncateSQL(sqlStr), "err", err)
 		return errResult(fmt.Sprintf("query failed: %v", err))
@@ -184,21 +221,33 @@ func (h *Handler) handleQuery(_ context.Context, req mcpgo.CallToolRequest) (*mc
 }
 
 // handleExecute implements the execute tool.
-func (h *Handler) handleExecute(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleExecute(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	sqlStr := strings.TrimSpace(req.GetString("sql", ""))
 	if sqlStr == "" {
 		h.logger.Warn("execute: missing required parameter 'sql'")
 		return errResult("parameter 'sql' is required and must be a non-empty string")
 	}
+	params, err := getParams(req)
+	if err != nil {
+		h.logger.Warn("execute: invalid params", "err", err)
+		return errResult(err.Error())
+	}
 
 	h.gate.RLock()
 	defer h.gate.RUnlock()
 
-	result, err := h.repo.Execute(sqlStr)
+	ctx, cancel := context.WithTimeout(ctx, h.queryTimeout)
+	defer cancel()
+
+	result, err := h.repo.Execute(ctx, sqlStr, params)
 	if err != nil {
 		if errors.Is(err, database.ErrNoDatabase) {
 			h.logger.Warn("execute: no database open")
 			return errResult("No database is open. Call open_database first.")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			h.logger.Warn("execute: timed out", "sql", truncateSQL(sqlStr), "timeout", h.queryTimeout)
+			return errResult(fmt.Sprintf("execute timed out after %v", h.queryTimeout))
 		}
 		h.logger.Error("execute failed", "sql", truncateSQL(sqlStr), "err", err)
 		return errResult(fmt.Sprintf("execute failed: %v", err))

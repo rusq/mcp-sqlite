@@ -3,6 +3,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -289,8 +290,11 @@ func tableForeignKeys(c *sql.DB, table string) ([]ForeignKey, error) {
 }
 
 // Query executes a read-only SQL statement and returns all rows. It enforces
-// that the statement begins with SELECT, WITH, or EXPLAIN.
-func (d *DB) Query(sqlStr string) (QueryResult, error) {
+// that the statement begins with SELECT, WITH, or EXPLAIN. params are optional
+// bind arguments substituted for ? placeholders in the SQL statement.
+// The context is forwarded to the driver so that a caller-imposed deadline or
+// cancellation interrupts the query promptly.
+func (d *DB) Query(ctx context.Context, sqlStr string, params []any) (QueryResult, error) {
 	if err := enforceReadOnly(sqlStr); err != nil {
 		return QueryResult{}, err
 	}
@@ -300,7 +304,7 @@ func (d *DB) Query(sqlStr string) (QueryResult, error) {
 		return QueryResult{}, err
 	}
 
-	rows, err := c.Query(sqlStr)
+	rows, err := c.QueryContext(ctx, sqlStr, params...)
 	if err != nil {
 		return QueryResult{}, fmt.Errorf("query: %w", err)
 	}
@@ -339,8 +343,11 @@ func (d *DB) Query(sqlStr string) (QueryResult, error) {
 }
 
 // Execute runs a write SQL statement and returns rows affected and last insert
-// ID. It rejects SELECT/WITH/EXPLAIN statements.
-func (d *DB) Execute(sqlStr string) (ExecuteResult, error) {
+// ID. It rejects SELECT/WITH/EXPLAIN statements. params are optional bind
+// arguments substituted for ? placeholders in the SQL statement.
+// The context is forwarded to the driver so that a caller-imposed deadline or
+// cancellation interrupts the statement promptly.
+func (d *DB) Execute(ctx context.Context, sqlStr string, params []any) (ExecuteResult, error) {
 	if err := enforceWrite(sqlStr); err != nil {
 		return ExecuteResult{}, err
 	}
@@ -350,7 +357,7 @@ func (d *DB) Execute(sqlStr string) (ExecuteResult, error) {
 		return ExecuteResult{}, err
 	}
 
-	res, err := c.Exec(sqlStr)
+	res, err := c.ExecContext(ctx, sqlStr, params...)
 	if err != nil {
 		return ExecuteResult{}, fmt.Errorf("execute: %w", err)
 	}
