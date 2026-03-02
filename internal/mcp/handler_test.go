@@ -96,6 +96,32 @@ func testHarness(t *testing.T) (cli *mcpclient.Client, dbPath string, altPath st
 	return cli, dbPath, altPath
 }
 
+// testHarnessWithTimeout creates a harness whose handler uses the given timeout.
+func testHarnessWithTimeout(t *testing.T, timeout time.Duration) *mcpclient.Client {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "timeout.db")
+	repo := database.New()
+	if err := repo.Open(dbPath); err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if _, err := repo.ExecRaw(`CREATE TABLE slow (id INTEGER PRIMARY KEY);`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	srv := mcpserver.NewMCPServer("test-timeout", "0.0.0")
+	h := New(repo, slog.Default(), 10, timeout)
+	h.Register(srv)
+
+	cli, err := mcpclient.NewInProcessClient(srv)
+	if err != nil {
+		t.Fatalf("in-process client: %v", err)
+	}
+	initClient(t, cli)
+	t.Cleanup(func() { cli.Close(); repo.Close() })
+	return cli
+}
+
 // callTool is a helper that calls a named tool and returns the result.
 func callTool(t *testing.T, cli *mcpclient.Client, name string, args map[string]any) *mcpgo.CallToolResult {
 	t.Helper()
@@ -123,207 +149,247 @@ func resultText(res *mcpgo.CallToolResult) string {
 
 // ── get_schema ─────────────────────────────────────────────────────────────
 
-func TestHandler_GetSchema_All(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "get_schema", map[string]any{})
-	if res.IsError {
-		t.Fatalf("get_schema error: %s", resultText(res))
-	}
-	text := resultText(res)
-	for _, want := range []string{"users", "orders", "idx_orders_user"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("get_schema response missing %q", want)
+func TestHandler_GetSchema(t *testing.T) {
+	t.Run("All", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "get_schema", map[string]any{})
+		if res.IsError {
+			t.Fatalf("get_schema error: %s", resultText(res))
 		}
-	}
+		text := resultText(res)
+		for _, want := range []string{"users", "orders", "idx_orders_user"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("get_schema response missing %q", want)
+			}
+		}
+	})
 }
 
 // ── query ──────────────────────────────────────────────────────────────────
 
-func TestHandler_Query_Select(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "query", map[string]any{"sql": "SELECT id, name FROM users ORDER BY id"})
-	if res.IsError {
-		t.Fatalf("query error: %s", resultText(res))
-	}
-	text := resultText(res)
-	if !strings.Contains(text, "Alice") {
-		t.Errorf("query response missing 'Alice': %s", text)
-	}
-}
-
-func TestHandler_Query_WithCTE(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "query", map[string]any{"sql": "WITH cte AS (SELECT 1 AS n) SELECT n FROM cte"})
-	if res.IsError {
-		t.Fatalf("WITH CTE query error: %s", resultText(res))
-	}
-}
-
-func TestHandler_Query_Explain(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "query", map[string]any{"sql": "EXPLAIN SELECT * FROM users"})
-	if res.IsError {
-		t.Fatalf("EXPLAIN query error: %s", resultText(res))
-	}
-}
-
-func TestHandler_Query_MissingParam(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "query", map[string]any{})
-	if !res.IsError {
-		t.Fatal("expected error for missing sql param")
-	}
-}
-
-func TestHandler_Query_EmptySQL(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "query", map[string]any{"sql": "   "})
-	if !res.IsError {
-		t.Fatal("expected error for empty sql")
-	}
-}
-
-func TestHandler_Query_NonSelect(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "query", map[string]any{"sql": "INSERT INTO users(name,age) VALUES('X',1)"})
-	if !res.IsError {
-		t.Fatal("expected error for non-SELECT in query")
-	}
-}
-
-func TestHandler_Query_BindParams(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "query", map[string]any{
-		"sql":    "SELECT id, name FROM users WHERE name = ?",
-		"params": []any{"Alice"},
+func TestHandler_Query(t *testing.T) {
+	t.Run("Select", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "query", map[string]any{"sql": "SELECT id, name FROM users ORDER BY id"})
+		if res.IsError {
+			t.Fatalf("query error: %s", resultText(res))
+		}
+		if !strings.Contains(resultText(res), "Alice") {
+			t.Errorf("query response missing 'Alice': %s", resultText(res))
+		}
 	})
-	if res.IsError {
-		t.Fatalf("query with bind params error: %s", resultText(res))
-	}
-	text := resultText(res)
-	if !strings.Contains(text, "Alice") {
-		t.Errorf("expected 'Alice' in result, got: %s", text)
-	}
-	if strings.Contains(text, "Bob") || strings.Contains(text, "Carol") {
-		t.Errorf("unexpected rows in filtered result: %s", text)
-	}
-}
 
-func TestHandler_Execute_BindParams(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "execute", map[string]any{
-		"sql":    "INSERT INTO users(name, age) VALUES(?, ?)",
-		"params": []any{"Dave", 40},
+	t.Run("WithCTE", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "query", map[string]any{"sql": "WITH cte AS (SELECT 1 AS n) SELECT n FROM cte"})
+		if res.IsError {
+			t.Fatalf("WITH CTE query error: %s", resultText(res))
+		}
 	})
-	if res.IsError {
-		t.Fatalf("execute with bind params error: %s", resultText(res))
-	}
-	if !strings.Contains(resultText(res), "Rows affected: 1") {
-		t.Errorf("unexpected response: %s", resultText(res))
-	}
 
-	// Verify the row can be retrieved via a parameterised query.
-	check := callTool(t, cli, "query", map[string]any{
-		"sql":    "SELECT name FROM users WHERE name = ?",
-		"params": []any{"Dave"},
+	t.Run("Explain", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "query", map[string]any{"sql": "EXPLAIN SELECT * FROM users"})
+		if res.IsError {
+			t.Fatalf("EXPLAIN query error: %s", resultText(res))
+		}
 	})
-	if check.IsError {
-		t.Fatalf("verify query error: %s", resultText(check))
-	}
-	if !strings.Contains(resultText(check), "Dave") {
-		t.Errorf("inserted row not found via bind-param query: %s", resultText(check))
-	}
+
+	t.Run("BindParams", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "query", map[string]any{
+			"sql":    "SELECT id, name FROM users WHERE name = ?",
+			"params": []any{"Alice"},
+		})
+		if res.IsError {
+			t.Fatalf("query with bind params error: %s", resultText(res))
+		}
+		text := resultText(res)
+		if !strings.Contains(text, "Alice") {
+			t.Errorf("expected 'Alice' in result, got: %s", text)
+		}
+		if strings.Contains(text, "Bob") || strings.Contains(text, "Carol") {
+			t.Errorf("unexpected rows in filtered result: %s", text)
+		}
+	})
+
+	// Table-driven error cases.
+	t.Run("Errors", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			args map[string]any
+		}{
+			{"MissingParam", map[string]any{}},
+			{"EmptySQL", map[string]any{"sql": "   "}},
+			{"NonSelect", map[string]any{"sql": "INSERT INTO users(name,age) VALUES('X',1)"}},
+		} {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				cli, _, _ := testHarness(t)
+				res := callTool(t, cli, "query", tc.args)
+				if !res.IsError {
+					t.Fatalf("expected error result for case %q, got success", tc.name)
+				}
+			})
+		}
+	})
+
+	t.Run("Timeout", func(t *testing.T) {
+		// Use a 1 ms timeout — any real query should exceed it.
+		cli := testHarnessWithTimeout(t, 1*time.Millisecond)
+
+		// WITH RECURSIVE generates enough work to reliably hit the timeout.
+		res := callTool(t, cli, "query", map[string]any{
+			"sql": "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 1000000) SELECT count(*) FROM cnt",
+		})
+		if !res.IsError {
+			t.Fatal("expected timeout error, got success")
+		}
+		if !strings.Contains(resultText(res), "timed out") {
+			t.Errorf("expected 'timed out' in error message, got: %s", resultText(res))
+		}
+	})
 }
 
 // ── execute ────────────────────────────────────────────────────────────────
 
-func TestHandler_Execute_Insert(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "execute", map[string]any{"sql": "INSERT INTO users(name,age) VALUES('Dave',40)"})
-	if res.IsError {
-		t.Fatalf("execute INSERT error: %s", resultText(res))
-	}
-	if !strings.Contains(resultText(res), "Rows affected: 1") {
-		t.Errorf("unexpected response: %s", resultText(res))
-	}
-}
+func TestHandler_Execute(t *testing.T) {
+	t.Run("Insert", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "execute", map[string]any{"sql": "INSERT INTO users(name,age) VALUES('Dave',40)"})
+		if res.IsError {
+			t.Fatalf("execute INSERT error: %s", resultText(res))
+		}
+		if !strings.Contains(resultText(res), "Rows affected: 1") {
+			t.Errorf("unexpected response: %s", resultText(res))
+		}
+	})
 
-func TestHandler_Execute_Update(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "execute", map[string]any{"sql": "UPDATE users SET age=31 WHERE name='Alice'"})
-	if res.IsError {
-		t.Fatalf("execute UPDATE error: %s", resultText(res))
-	}
-	if !strings.Contains(resultText(res), "Rows affected: 1") {
-		t.Errorf("unexpected response: %s", resultText(res))
-	}
-}
+	t.Run("Update", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "execute", map[string]any{"sql": "UPDATE users SET age=31 WHERE name='Alice'"})
+		if res.IsError {
+			t.Fatalf("execute UPDATE error: %s", resultText(res))
+		}
+		if !strings.Contains(resultText(res), "Rows affected: 1") {
+			t.Errorf("unexpected response: %s", resultText(res))
+		}
+	})
 
-func TestHandler_Execute_DDL(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "execute", map[string]any{"sql": "CREATE TABLE tmp (id INTEGER PRIMARY KEY)"})
-	if res.IsError {
-		t.Fatalf("execute DDL error: %s", resultText(res))
-	}
-}
+	t.Run("DDL", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "execute", map[string]any{"sql": "CREATE TABLE tmp (id INTEGER PRIMARY KEY)"})
+		if res.IsError {
+			t.Fatalf("execute DDL error: %s", resultText(res))
+		}
+	})
 
-func TestHandler_Execute_MissingParam(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "execute", map[string]any{})
-	if !res.IsError {
-		t.Fatal("expected error for missing sql param")
-	}
-}
+	t.Run("BindParams", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "execute", map[string]any{
+			"sql":    "INSERT INTO users(name, age) VALUES(?, ?)",
+			"params": []any{"Dave", 40},
+		})
+		if res.IsError {
+			t.Fatalf("execute with bind params error: %s", resultText(res))
+		}
+		if !strings.Contains(resultText(res), "Rows affected: 1") {
+			t.Errorf("unexpected response: %s", resultText(res))
+		}
 
-func TestHandler_Execute_RejectsSelect(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "execute", map[string]any{"sql": "SELECT * FROM users"})
-	if !res.IsError {
-		t.Fatal("expected error for SELECT in execute")
-	}
+		// Verify the row can be retrieved via a parameterised query.
+		check := callTool(t, cli, "query", map[string]any{
+			"sql":    "SELECT name FROM users WHERE name = ?",
+			"params": []any{"Dave"},
+		})
+		if check.IsError {
+			t.Fatalf("verify query error: %s", resultText(check))
+		}
+		if !strings.Contains(resultText(check), "Dave") {
+			t.Errorf("inserted row not found via bind-param query: %s", resultText(check))
+		}
+	})
+
+	// Table-driven error cases.
+	t.Run("Errors", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			args map[string]any
+		}{
+			{"MissingParam", map[string]any{}},
+			{"RejectsSelect", map[string]any{"sql": "SELECT * FROM users"}},
+		} {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				cli, _, _ := testHarness(t)
+				res := callTool(t, cli, "execute", tc.args)
+				if !res.IsError {
+					t.Fatalf("expected error result for case %q, got success", tc.name)
+				}
+			})
+		}
+	})
+
+	t.Run("Timeout", func(t *testing.T) {
+		// Use a 1 ms timeout.
+		cli := testHarnessWithTimeout(t, 1*time.Millisecond)
+
+		// Insert inside a WITH RECURSIVE to produce enough work to trip the timeout.
+		res := callTool(t, cli, "execute", map[string]any{
+			"sql": "INSERT INTO slow SELECT value FROM generate_series(1, 1000000)",
+		})
+		if !res.IsError {
+			// generate_series may not be available in all SQLite builds; if the
+			// statement itself errors for another reason that's fine too — we only
+			// care that no panic occurred and an error was returned.
+			t.Log("execute did not time out (generate_series may be unavailable); verifying no panic")
+		}
+	})
 }
 
 // ── open_database ──────────────────────────────────────────────────────────
 
-func TestHandler_OpenDatabase_Success(t *testing.T) {
-	cli, dbPath, _ := testHarness(t)
-	res := callTool(t, cli, "open_database", map[string]any{"path": dbPath})
-	if res.IsError {
-		t.Fatalf("open_database error: %s", resultText(res))
-	}
-}
+func TestHandler_OpenDatabase(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		cli, dbPath, _ := testHarness(t)
+		res := callTool(t, cli, "open_database", map[string]any{"path": dbPath})
+		if res.IsError {
+			t.Fatalf("open_database error: %s", resultText(res))
+		}
+	})
 
-func TestHandler_OpenDatabase_NotFound(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "open_database", map[string]any{"path": "/nonexistent/path.db"})
-	if !res.IsError {
-		t.Fatal("expected error for non-existent file")
-	}
-}
+	t.Run("NotFound", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "open_database", map[string]any{"path": "/nonexistent/path.db"})
+		if !res.IsError {
+			t.Fatal("expected error for non-existent file")
+		}
+	})
 
-func TestHandler_OpenDatabase_MissingParam(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	res := callTool(t, cli, "open_database", map[string]any{})
-	if !res.IsError {
-		t.Fatal("expected error for missing path param")
-	}
-}
+	t.Run("MissingParam", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		res := callTool(t, cli, "open_database", map[string]any{})
+		if !res.IsError {
+			t.Fatal("expected error for missing path param")
+		}
+	})
 
-func TestHandler_OpenDatabase_ReplacesPrevious(t *testing.T) {
-	cli, _, altPath := testHarness(t)
-	res := callTool(t, cli, "open_database", map[string]any{"path": altPath})
-	if res.IsError {
-		t.Fatalf("open alt db: %s", resultText(res))
-	}
-	// After switching, get_schema should return alt_table, not users.
-	schemaRes := callTool(t, cli, "get_schema", map[string]any{})
-	text := resultText(schemaRes)
-	if !strings.Contains(text, "alt_table") {
-		t.Errorf("after switching DB, expected 'alt_table' in schema, got: %s", text)
-	}
-	if strings.Contains(text, "users") {
-		t.Errorf("after switching DB, 'users' should not appear in schema")
-	}
+	t.Run("ReplacesPrevious", func(t *testing.T) {
+		cli, _, altPath := testHarness(t)
+		res := callTool(t, cli, "open_database", map[string]any{"path": altPath})
+		if res.IsError {
+			t.Fatalf("open alt db: %s", resultText(res))
+		}
+		// After switching, get_schema should return alt_table, not users.
+		schemaRes := callTool(t, cli, "get_schema", map[string]any{})
+		text := resultText(schemaRes)
+		if !strings.Contains(text, "alt_table") {
+			t.Errorf("after switching DB, expected 'alt_table' in schema, got: %s", text)
+		}
+		if strings.Contains(text, "users") {
+			t.Errorf("after switching DB, 'users' should not appear in schema")
+		}
+	})
 }
 
 // ── no database open ───────────────────────────────────────────────────────
@@ -350,80 +416,25 @@ func TestHandler_NoDatabaseOpen(t *testing.T) {
 		{"query", map[string]any{"sql": "SELECT 1"}},
 		{"execute", map[string]any{"sql": "CREATE TABLE t (id INTEGER)"}},
 	} {
-		res := callTool(t, cli, tc.tool, tc.args)
-		if !res.IsError {
-			t.Errorf("tool %q: expected 'no database' error, got success", tc.tool)
-		}
+		tc := tc
+		t.Run(tc.tool, func(t *testing.T) {
+			res := callTool(t, cli, tc.tool, tc.args)
+			if !res.IsError {
+				t.Errorf("tool %q: expected 'no database' error, got success", tc.tool)
+			}
+		})
 	}
 }
 
 // ── malformed arguments ────────────────────────────────────────────────────
 
-func TestHandler_MalformedArgs_NoPanic(t *testing.T) {
-	cli, _, _ := testHarness(t)
-	// Pass nil-valued args — should return graceful errors, not panic.
-	for _, tool := range []string{"query", "execute", "open_database"} {
-		res := callTool(t, cli, tool, map[string]any{"sql": nil, "path": nil})
-		_ = res // result may be error or success; we just verify no panic
-	}
-}
-
-// ── query timeout ──────────────────────────────────────────────────────────
-
-// testHarnessWithTimeout creates a harness whose handler uses the given timeout.
-func testHarnessWithTimeout(t *testing.T, timeout time.Duration) *mcpclient.Client {
-	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "timeout.db")
-	repo := database.New()
-	if err := repo.Open(dbPath); err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	if _, err := repo.ExecRaw(`CREATE TABLE slow (id INTEGER PRIMARY KEY);`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	srv := mcpserver.NewMCPServer("test-timeout", "0.0.0")
-	h := New(repo, slog.Default(), 10, timeout)
-	h.Register(srv)
-
-	cli, err := mcpclient.NewInProcessClient(srv)
-	if err != nil {
-		t.Fatalf("in-process client: %v", err)
-	}
-	initClient(t, cli)
-	t.Cleanup(func() { cli.Close(); repo.Close() })
-	return cli
-}
-
-func TestHandler_Query_Timeout(t *testing.T) {
-	// Use a 1 ms timeout — any real query should exceed it.
-	cli := testHarnessWithTimeout(t, 1*time.Millisecond)
-
-	// WITH RECURSIVE generates enough work to reliably hit the timeout.
-	res := callTool(t, cli, "query", map[string]any{
-		"sql": "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 1000000) SELECT count(*) FROM cnt",
+func TestHandler_MalformedArgs(t *testing.T) {
+	t.Run("NoPanic", func(t *testing.T) {
+		cli, _, _ := testHarness(t)
+		// Pass nil-valued args — should return graceful errors, not panic.
+		for _, tool := range []string{"query", "execute", "open_database"} {
+			res := callTool(t, cli, tool, map[string]any{"sql": nil, "path": nil})
+			_ = res // result may be error or success; we just verify no panic
+		}
 	})
-	if !res.IsError {
-		t.Fatal("expected timeout error, got success")
-	}
-	if !strings.Contains(resultText(res), "timed out") {
-		t.Errorf("expected 'timed out' in error message, got: %s", resultText(res))
-	}
-}
-
-func TestHandler_Execute_Timeout(t *testing.T) {
-	// Use a 1 ms timeout.
-	cli := testHarnessWithTimeout(t, 1*time.Millisecond)
-
-	// Insert inside a WITH RECURSIVE to produce enough work to trip the timeout.
-	res := callTool(t, cli, "execute", map[string]any{
-		"sql": "INSERT INTO slow SELECT value FROM generate_series(1, 1000000)",
-	})
-	if !res.IsError {
-		// generate_series may not be available in all SQLite builds; if the
-		// statement itself errors for another reason that's fine too — we only
-		// care that no panic occurred and an error was returned.
-		t.Log("execute did not time out (generate_series may be unavailable); verifying no panic")
-	}
 }
