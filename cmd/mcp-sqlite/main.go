@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
@@ -22,16 +23,20 @@ const serverName = "sqlite-mcp-server"
 func main() {
 	// Step 1: Parse CLI flags. On failure, flag.Parse calls log.Fatal internally.
 	var (
-		verbose = flag.Bool("v", false, "enable verbose/debug logging")
-		listen  = flag.String("listen", "127.0.0.1:8483", "address to listen on in HTTP mode")
-		http    = flag.Bool("http", false, "start in HTTP mode instead of STDIO")
-		maxRows = flag.Int("max-rows", 10, "maximum rows returned by the query tool")
+		verbose      = flag.Bool("v", false, "enable verbose/debug logging")
+		listen       = flag.String("listen", "127.0.0.1:8483", "`address` to listen on in HTTP mode")
+		http         = flag.Bool("http", false, "start in HTTP mode instead of STDIO")
+		maxRows      = flag.Int("max-rows", 10, "maximum rows returned by the query tool")
+		queryTimeout = flag.Duration("query-timeout", 60*time.Second, "maximum duration for a single query or execute call")
 	)
 	flag.Parse()
 	dbPath := flag.Arg(0)
 
 	if *maxRows < 1 {
 		log.Fatalf("-max-rows must be at least 1, got %d", *maxRows)
+	}
+	if *queryTimeout <= 0 {
+		log.Fatalf("-query-timeout must be a positive duration, got %v", *queryTimeout)
 	}
 
 	// Step 2: Initialise logger (stderr only).
@@ -62,7 +67,7 @@ func main() {
 
 	// Step 6 & 7: Instantiate handler and register tools with the MCP server.
 	mcpSrv := mcpserver.NewMCPServer(serverName, "1.0.0")
-	handler := mcphandler.New(repo, logger, *maxRows)
+	handler := mcphandler.New(repo, logger, *maxRows, *queryTimeout)
 	handler.Register(mcpSrv)
 
 	// Step 8: Register OS signal handlers for graceful shutdown.

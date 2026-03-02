@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -46,7 +47,7 @@ func TestHandler_ConcurrencyStress(t *testing.T) {
 	defer repo.Close()
 
 	srv := mcpserver.NewMCPServer("stress", "0.0.0")
-	h := New(repo, slog.Default(), 10)
+	h := New(repo, slog.Default(), 10, 60*time.Second)
 	h.Register(srv)
 
 	// newClient is a helper that creates and initialises a fresh in-process client.

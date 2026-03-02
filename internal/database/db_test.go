@@ -3,6 +3,8 @@
 package database
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -48,6 +50,9 @@ func newTestDB(t *testing.T) (*DB, string) {
 	}
 	return db, path
 }
+
+// bg is shorthand for context.Background() used throughout tests.
+var bg = context.Background()
 
 // ── GetSchema ────────────────────────────────────────────────────────────────
 
@@ -136,7 +141,7 @@ func TestQuery_Select(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	res, err := db.Query("SELECT id, name FROM users ORDER BY id", nil)
+	res, err := db.Query(bg, "SELECT id, name FROM users ORDER BY id", nil)
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -152,7 +157,7 @@ func TestQuery_WithCTE(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	_, err := db.Query("WITH cte AS (SELECT 1 AS n) SELECT n FROM cte", nil)
+	_, err := db.Query(bg, "WITH cte AS (SELECT 1 AS n) SELECT n FROM cte", nil)
 	if err != nil {
 		t.Fatalf("WITH query: %v", err)
 	}
@@ -162,7 +167,7 @@ func TestQuery_Explain(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	_, err := db.Query("EXPLAIN SELECT * FROM users", nil)
+	_, err := db.Query(bg, "EXPLAIN SELECT * FROM users", nil)
 	if err != nil {
 		t.Fatalf("EXPLAIN query: %v", err)
 	}
@@ -172,7 +177,7 @@ func TestQuery_RejectsNonSelect(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	_, err := db.Query("INSERT INTO users(name,age) VALUES('X',1)", nil)
+	_, err := db.Query(bg, "INSERT INTO users(name,age) VALUES('X',1)", nil)
 	if err == nil {
 		t.Fatal("expected error for non-SELECT statement")
 	}
@@ -184,7 +189,7 @@ func TestExecute_Insert(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	res, err := db.Execute("INSERT INTO users(name, age) VALUES('Dave', 40)", nil)
+	res, err := db.Execute(bg, "INSERT INTO users(name, age) VALUES('Dave', 40)", nil)
 	if err != nil {
 		t.Fatalf("Execute INSERT: %v", err)
 	}
@@ -200,7 +205,7 @@ func TestExecute_Update(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	res, err := db.Execute("UPDATE users SET age = 31 WHERE name = 'Alice'", nil)
+	res, err := db.Execute(bg, "UPDATE users SET age = 31 WHERE name = 'Alice'", nil)
 	if err != nil {
 		t.Fatalf("Execute UPDATE: %v", err)
 	}
@@ -213,7 +218,7 @@ func TestExecute_RejectsSelect(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	_, err := db.Execute("SELECT * FROM users", nil)
+	_, err := db.Execute(bg, "SELECT * FROM users", nil)
 	if err == nil {
 		t.Fatal("expected error for SELECT in Execute")
 	}
@@ -224,7 +229,7 @@ func TestQuery_RejectsEmpty(t *testing.T) {
 	defer db.Close()
 
 	for _, sql := range []string{"", "   ", "\t\n"} {
-		_, err := db.Query(sql, nil)
+		_, err := db.Query(bg, sql, nil)
 		if err == nil {
 			t.Errorf("Query(%q): expected error for empty SQL, got nil", sql)
 		}
@@ -236,7 +241,7 @@ func TestExecute_RejectsEmpty(t *testing.T) {
 	defer db.Close()
 
 	for _, sql := range []string{"", "   ", "\t\n"} {
-		_, err := db.Execute(sql, nil)
+		_, err := db.Execute(bg, sql, nil)
 		if err == nil {
 			t.Errorf("Execute(%q): expected error for empty SQL, got nil", sql)
 		}
@@ -249,7 +254,7 @@ func TestQuery_BindParams(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	res, err := db.Query("SELECT id, name FROM users WHERE name = ?", []any{"Alice"})
+	res, err := db.Query(bg, "SELECT id, name FROM users WHERE name = ?", []any{"Alice"})
 	if err != nil {
 		t.Fatalf("Query with bind param: %v", err)
 	}
@@ -265,7 +270,7 @@ func TestQuery_BindParams_MultipleParams(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	res, err := db.Query("SELECT id, name FROM users WHERE name = ? AND age = ?", []any{"Alice", int64(30)})
+	res, err := db.Query(bg, "SELECT id, name FROM users WHERE name = ? AND age = ?", []any{"Alice", int64(30)})
 	if err != nil {
 		t.Fatalf("Query with multiple bind params: %v", err)
 	}
@@ -278,7 +283,7 @@ func TestExecute_BindParams(t *testing.T) {
 	db, _ := newTestDB(t)
 	defer db.Close()
 
-	res, err := db.Execute("INSERT INTO users(name, age) VALUES(?, ?)", []any{"Eve", int64(22)})
+	res, err := db.Execute(bg, "INSERT INTO users(name, age) VALUES(?, ?)", []any{"Eve", int64(22)})
 	if err != nil {
 		t.Fatalf("Execute with bind params: %v", err)
 	}
@@ -287,7 +292,7 @@ func TestExecute_BindParams(t *testing.T) {
 	}
 
 	// Verify the row was inserted with the correct values.
-	check, err := db.Query("SELECT name, age FROM users WHERE name = ?", []any{"Eve"})
+	check, err := db.Query(bg, "SELECT name, age FROM users WHERE name = ?", []any{"Eve"})
 	if err != nil {
 		t.Fatalf("verify query: %v", err)
 	}
@@ -296,5 +301,39 @@ func TestExecute_BindParams(t *testing.T) {
 	}
 	if check.Rows[0]["name"] != "Eve" {
 		t.Errorf("name = %v, want Eve", check.Rows[0]["name"])
+	}
+}
+
+// ── Context cancellation ──────────────────────────────────────────────────────
+
+func TestQuery_CancelledContext(t *testing.T) {
+	db, _ := newTestDB(t)
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := db.Query(ctx, "SELECT id, name FROM users", nil)
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestExecute_CancelledContext(t *testing.T) {
+	db, _ := newTestDB(t)
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := db.Execute(ctx, "INSERT INTO users(name, age) VALUES('Ghost', 0)", nil)
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
 	}
 }

@@ -19,7 +19,7 @@ import (
 func TestStdioShutdown(t *testing.T) {
 	srv := mcpserver.NewMCPServer("shutdown-test", "0.0.0")
 	repo := database.New()
-	h := New(repo, slog.Default(), 10)
+	h := New(repo, slog.Default(), 10, 60*time.Second)
 	h.Register(srv)
 
 	stdioSrv := mcpserver.NewStdioServer(srv)
