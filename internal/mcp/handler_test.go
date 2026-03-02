@@ -222,6 +222,7 @@ func TestHandler_Query(t *testing.T) {
 			{"MissingParam", map[string]any{}},
 			{"EmptySQL", map[string]any{"sql": "   "}},
 			{"NonSelect", map[string]any{"sql": "INSERT INTO users(name,age) VALUES('X',1)"}},
+			{"MalformedParams", map[string]any{"sql": "SELECT 1", "params": "not-an-array"}},
 		} {
 			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
@@ -235,12 +236,13 @@ func TestHandler_Query(t *testing.T) {
 	})
 
 	t.Run("Timeout", func(t *testing.T) {
-		// Use a 1 ms timeout — any real query should exceed it.
-		cli := testHarnessWithTimeout(t, 1*time.Millisecond)
+		// A negative timeout passed to context.WithTimeout produces a context
+		// that is already expired before any I/O begins — deterministic and
+		// immune to scheduling jitter.
+		cli := testHarnessWithTimeout(t, -1)
 
-		// WITH RECURSIVE generates enough work to reliably hit the timeout.
 		res := callTool(t, cli, "query", map[string]any{
-			"sql": "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < 1000000) SELECT count(*) FROM cnt",
+			"sql": "SELECT id, name FROM users ORDER BY id",
 		})
 		if !res.IsError {
 			t.Fatal("expected timeout error, got success")
@@ -318,6 +320,7 @@ func TestHandler_Execute(t *testing.T) {
 		}{
 			{"MissingParam", map[string]any{}},
 			{"RejectsSelect", map[string]any{"sql": "SELECT * FROM users"}},
+			{"MalformedParams", map[string]any{"sql": "INSERT INTO users(name,age) VALUES(?,?)", "params": "not-an-array"}},
 		} {
 			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
@@ -331,18 +334,19 @@ func TestHandler_Execute(t *testing.T) {
 	})
 
 	t.Run("Timeout", func(t *testing.T) {
-		// Use a 1 ms timeout.
-		cli := testHarnessWithTimeout(t, 1*time.Millisecond)
+		// A negative timeout passed to context.WithTimeout produces a context
+		// that is already expired before any I/O begins — deterministic and
+		// immune to scheduling jitter.
+		cli := testHarnessWithTimeout(t, -1)
 
-		// Insert inside a WITH RECURSIVE to produce enough work to trip the timeout.
 		res := callTool(t, cli, "execute", map[string]any{
-			"sql": "INSERT INTO slow SELECT value FROM generate_series(1, 1000000)",
+			"sql": "INSERT INTO slow(id) VALUES (1)",
 		})
 		if !res.IsError {
-			// generate_series may not be available in all SQLite builds; if the
-			// statement itself errors for another reason that's fine too — we only
-			// care that no panic occurred and an error was returned.
-			t.Log("execute did not time out (generate_series may be unavailable); verifying no panic")
+			t.Fatal("expected timeout error, got success")
+		}
+		if !strings.Contains(resultText(res), "timed out") {
+			t.Errorf("expected 'timed out' in error message, got: %s", resultText(res))
 		}
 	})
 }

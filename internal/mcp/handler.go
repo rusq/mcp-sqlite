@@ -170,17 +170,18 @@ func (h *Handler) handleGetSchema(_ context.Context, req mcpgo.CallToolRequest) 
 
 // getParams extracts the optional "params" array from a tool request,
 // preserving the native JSON types (string, float64, bool, nil) of each item.
-// Returns nil if the key is absent or not an array.
-func getParams(req mcpgo.CallToolRequest) []any {
+// Returns (nil, nil) if the key is absent or null.
+// Returns a non-nil error if "params" is present but not a JSON array.
+func getParams(req mcpgo.CallToolRequest) ([]any, error) {
 	v, ok := req.GetArguments()["params"]
 	if !ok || v == nil {
-		return nil
+		return nil, nil
 	}
 	arr, ok := v.([]any)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("parameter 'params' must be an array, got %T", v)
 	}
-	return arr
+	return arr, nil
 }
 
 // handleQuery implements the query tool.
@@ -190,7 +191,11 @@ func (h *Handler) handleQuery(ctx context.Context, req mcpgo.CallToolRequest) (*
 		h.logger.Warn("query: missing required parameter 'sql'")
 		return errResult("parameter 'sql' is required and must be a non-empty string")
 	}
-	params := getParams(req)
+	params, err := getParams(req)
+	if err != nil {
+		h.logger.Warn("query: invalid params", "err", err)
+		return errResult(err.Error())
+	}
 
 	h.gate.RLock()
 	defer h.gate.RUnlock()
@@ -222,7 +227,11 @@ func (h *Handler) handleExecute(ctx context.Context, req mcpgo.CallToolRequest) 
 		h.logger.Warn("execute: missing required parameter 'sql'")
 		return errResult("parameter 'sql' is required and must be a non-empty string")
 	}
-	params := getParams(req)
+	params, err := getParams(req)
+	if err != nil {
+		h.logger.Warn("execute: invalid params", "err", err)
+		return errResult(err.Error())
+	}
 
 	h.gate.RLock()
 	defer h.gate.RUnlock()
